@@ -65,4 +65,4 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ### Installer Passport 
 php artisan migrate
-php artisan passport:keys
+php artisan passport:keys && php artisan passport:client --personal
