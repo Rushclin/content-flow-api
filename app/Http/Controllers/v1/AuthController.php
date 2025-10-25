@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\v1;
 
+use App\Enums\Role;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
 use App\Models\User;
@@ -20,7 +21,7 @@ class AuthController extends Controller
 
         $validated = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
-            'email' => 'required|string|email|max:255|unique:users|email',
+            'email' => 'required|string|email|max:255|unique:users|lowercase|email:rfc,dns',
             'password' => 'required|string|min:8',
         ]);
 
@@ -31,7 +32,10 @@ class AuthController extends Controller
         try {
             $user = User::create(array_merge(
                 $validated->validate(),
-                ['password' => bcrypt($request->password)]
+                [
+                    'password' => bcrypt($request->password),
+                    'role' => Role::USER,
+                ]
             ));
 
             $token = $user->createToken('auth_token')->accessToken;
