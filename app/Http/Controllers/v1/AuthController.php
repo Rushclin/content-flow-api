@@ -5,13 +5,10 @@ namespace App\Http\Controllers\v1;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
 use App\Models\User;
-use Exception;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Validator;
 
 class AuthController extends Controller
 {
@@ -20,22 +17,24 @@ class AuthController extends Controller
      */
     public function register(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
+
+        $validated = Validator::make($request->all(), [
+            'name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:users|email',
+            'password' => 'required|string|min:8',
         ]);
 
-        Log::debug('Register request data:', $validated);
-dd(1);
-        try {
-            $user = User::create([
-                'name' => $validated['name'],
-                'email' => $validated['email'],
-                'password' => Hash::make($validated['password']),
-            ]);
+        if ($validated->fails()) {
+            return response()->json(['errors' => $validated->errors()], 422);
+        }
 
-            $token = $user->createToken('auth_token')->plainTextToken;
+        try {
+            $user = User::create(array_merge(
+                $validated->validate(),
+                ['password' => bcrypt($request->password)]
+            ));
+
+            $token = $user->createToken('auth_token')->accessToken;
 
             return response()->json([
                 'message' => 'User registered successfully',
@@ -43,16 +42,11 @@ dd(1);
                 'access_token' => $token,
                 'token_type' => 'Bearer',
             ], 201);
-        } catch (ValidationException $e) {
+        } catch (\Throwable $th) {
+            Log::error('Registration error:', ['error' => $th->getMessage()]);
             return response()->json([
-                'message' => 'Validation failed',
-                'errors' => $e->errors(),
-            ], 422);
-        } catch (Exception $e) {
-            Log::error('Registration error:', ['error' => $e->getMessage()]);
-            return response()->json([
-                'message' => $e->getMessage() ?? 'Registration failed',
-            ], $e->getCode() ?: 500);
+                'message' => $th->getMessage() ?? 'Registration failed',
+            ], $th->getCode() ?: 500);
         }
     }
 
@@ -61,21 +55,23 @@ dd(1);
      */
     public function login(LoginRequest $request): JsonResponse
     {
-        if (!Auth::attempt($request->only('email', 'password'))) {
+        $credendtials = $request->only(['email', 'password']);
+
+        if (auth()->attempt($credendtials)) {
+            $user = auth()->user();
+            $token = $user->createToken('auth_token')->accessToken;
+
             return response()->json([
-                'message' => 'Invalid credentials'
+                'message' => 'Login successful',
+                'user' => $user,
+                'access_token' => $token,
+                'token_type' => 'Bearer',
+            ]);
+        } else {
+            return response()->json([
+                'message' => 'Unauthorized',
             ], 401);
         }
-
-        $user = User::where('email', $request->email)->firstOrFail();
-        $token = $user->createToken('auth_token')->plainTextToken;
-
-        return response()->json([
-            'message' => 'Login successful',
-            'user' => $user,
-            'access_token' => $token,
-            'token_type' => 'Bearer',
-        ]);
     }
 
     /**
