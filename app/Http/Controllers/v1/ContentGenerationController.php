@@ -18,20 +18,20 @@ class ContentGenerationController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'details' => 'required|string',
-            "theme" => 'required|string',
-            "platform" => 'required|string'
+            'theme' => 'required|string',
+            'platform' => 'required|string',
         ]);
 
         if ($validator->fails()) {
             return response()->json([
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
         try {
             $response = Http::timeout(60)
-                ->post(env("WEBHOOK_URL"), array_merge(
+                ->post(env('WEBHOOK_URL'), array_merge(
                     $validator->validate()
                 ));
 
@@ -39,7 +39,7 @@ class ContentGenerationController extends Controller
                 return response()->json([
                     'success' => true,
                     'data' => $response->json(),
-                    'status' => $response->status()
+                    'status' => $response->status(),
                 ]);
             }
 
@@ -49,32 +49,32 @@ class ContentGenerationController extends Controller
                 'success' => false,
                 'message' => 'Failed to generate content',
                 'error' => $response->body(),
-                'status' => $response->status()
+                'status' => $response->status(),
             ], $response->status());
 
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
             Log::error('Content generation connection error:', [
                 'error' => $e->getMessage(),
-                'ip' => $request->ip()
+                'ip' => $request->ip(),
             ]);
 
             return response()->json([
                 'success' => false,
                 'message' => 'Connection timeout or network error',
-                'error' => 'Unable to reach content generation service'
+                'error' => 'Unable to reach content generation service',
             ], 504);
 
         } catch (\Throwable $e) {
             Log::error('Content generation error:', [
                 'error' => $e->getMessage(),
                 'ip' => $request->ip(),
-                'trace' => $e->getTraceAsString()
+                'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([
                 'success' => false,
                 'message' => 'An error occurred while generating content',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error'
+                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
             ], 500);
         }
     }
