@@ -11,3 +11,8 @@ Route::prefix('auth')->as('auth:')->group(
 Route::prefix('content')->as('content:')->group(
     base_path('routes/api/v1/content.php'),
 );
+
+// CONVERSATIONS
+Route::prefix('conversations')->as('conversations:')->group(
+    base_path('routes/api/v1/conversations.php'),
+);

@@ -12,80 +12,89 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 
-class ContentGenerationController extends Controller
+class ConversationController extends Controller
 {
     /**
-     * Generate content using external webhook (without saving to database)
+     * Get all conversations for the authenticated user
      */
-    public function generate(Request $request): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $validator = Validator::make($request->all(), [
-            'details' => 'required|string',
-            'theme' => 'required|string',
-            'platform' => 'required|string',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'message' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
-        }
-
         try {
-            $response = Http::timeout(60)
-                ->post(env('WEBHOOK_URL'), array_merge(
-                    $validator->validate()
-                ));
+            $query = Conversation::query()->with(['messages' => function ($q) {
+                $q->latest()->limit(1);
+            }]);
 
-            if ($response->successful()) {
-                return response()->json([
-                    'success' => true,
-                    'data' => $response->json(),
-                    'status' => $response->status(),
-                ]);
+            // If user is authenticated, filter by user_id
+            if ($request->user()) {
+                $query->where('user_id', $request->user()->id);
+            } else {
+                // For non-authenticated users, show only conversations without user_id
+                $query->whereNull('user_id');
             }
 
-            Log::debug($response);
+            $conversations = $query->orderBy('updated_at', 'desc')->get();
 
             return response()->json([
-                'success' => false,
-                'message' => 'Failed to generate content',
-                'error' => $response->body(),
-                'status' => $response->status(),
-            ], $response->status());
-
-        } catch (\Illuminate\Http\Client\ConnectionException $e) {
-            Log::error('Content generation connection error:', [
-                'error' => $e->getMessage(),
-                'ip' => $request->ip(),
+                'success' => true,
+                'data' => $conversations,
             ]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Connection timeout or network error',
-                'error' => 'Unable to reach content generation service',
-            ], 504);
-
         } catch (\Throwable $e) {
-            Log::error('Content generation error:', [
+            Log::error('Failed to retrieve conversations:', [
                 'error' => $e->getMessage(),
-                'ip' => $request->ip(),
                 'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'An error occurred while generating content',
+                'message' => 'Failed to retrieve conversations',
                 'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
             ], 500);
         }
     }
 
     /**
-     * Generate content and save to conversation (authenticated users only)
+     * Get a specific conversation with all its messages
      */
-    public function generateWithConversation(Request $request): JsonResponse
+    public function show(Request $request, string $id): JsonResponse
+    {
+        try {
+            $conversation = Conversation::with('messages')->findOrFail($id);
+
+            // Check if user has access to this conversation
+            if ($request->user() && $conversation->user_id && $conversation->user_id !== $request->user()->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized access to this conversation',
+                ], 403);
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $conversation,
+            ]);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Conversation not found',
+            ], 404);
+        } catch (\Throwable $e) {
+            Log::error('Failed to retrieve conversation:', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to retrieve conversation',
+                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+            ], 500);
+        }
+    }
+
+    /**
+     * Send a message in a conversation (create new or continue existing)
+     */
+    public function sendMessage(Request $request): JsonResponse
     {
         $validator = Validator::make($request->all(), [
             'conversation_id' => 'nullable|string|exists:conversations,id',
@@ -115,7 +124,7 @@ class ContentGenerationController extends Controller
                 $conversation = Conversation::findOrFail($conversationId);
 
                 // Check if user has access to this conversation
-                if ($conversation->user_id !== $request->user()->id) {
+                if ($request->user() && $conversation->user_id && $conversation->user_id !== $request->user()->id) {
                     DB::rollBack();
                     return response()->json([
                         'success' => false,
@@ -125,7 +134,7 @@ class ContentGenerationController extends Controller
             } else {
                 // Create new conversation
                 $conversation = Conversation::create([
-                    'user_id' => $request->user()->id,
+                    'user_id' => $request->user()?->id,
                     'title' => $validated['title'] ?? substr($validated['message'], 0, 50),
                     'metadata' => [
                         'platform' => $validated['platform'],
@@ -221,17 +230,112 @@ class ContentGenerationController extends Controller
             ], 504);
         } catch (\Throwable $e) {
             DB::rollBack();
-            Log::error('Failed to generate content with conversation:', [
+            Log::error('Failed to send message:', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'An error occurred while processing content generation',
+                'message' => 'An error occurred while processing message',
+                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+            ], 500);
+        }
+    }
+
+    /**
+     * Update conversation title
+     */
+    public function update(Request $request, string $id): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'title' => 'required|string|max:255',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        try {
+            $conversation = Conversation::findOrFail($id);
+
+            // Check if user has access to update this conversation
+            if ($request->user() && $conversation->user_id && $conversation->user_id !== $request->user()->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized to update this conversation',
+                ], 403);
+            }
+
+            $conversation->update([
+                'title' => $request->input('title'),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'data' => $conversation,
+            ]);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Conversation not found',
+            ], 404);
+        } catch (\Throwable $e) {
+            Log::error('Failed to update conversation:', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'An error occurred while updating conversation',
+                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+            ], 500);
+        }
+    }
+
+    /**
+     * Delete a conversation
+     */
+    public function destroy(Request $request, string $id): JsonResponse
+    {
+        try {
+            $conversation = Conversation::findOrFail($id);
+
+            // Check if user has access to delete this conversation
+            if ($request->user() && $conversation->user_id && $conversation->user_id !== $request->user()->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized to delete this conversation',
+                ], 403);
+            }
+
+            $conversation->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Conversation deleted successfully',
+            ]);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Conversation not found',
+            ], 404);
+        } catch (\Throwable $e) {
+            Log::error('Failed to delete conversation:', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete conversation',
                 'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
             ], 500);
         }
     }
 }
-
